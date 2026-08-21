@@ -95,6 +95,7 @@ import com.koushik.mockmcq.data.db.QuestionWithOptions
 import com.koushik.mockmcq.data.repository.ExamSession
 import com.koushik.mockmcq.presentation.AppScreen
 import com.koushik.mockmcq.presentation.AppViewModel
+import com.koushik.mockmcq.presentation.AnswerKeyImportUiState
 import com.koushik.mockmcq.presentation.ImportUiState
 import com.koushik.mockmcq.ui.theme.MockMcqTheme
 import kotlinx.coroutines.delay
@@ -348,6 +349,9 @@ private fun QuestionContent(
             }
         }
         if (answer?.isMarkedForReview == true) Text("★ Marked for review", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+        if (!reviewMode && answer?.selectedOptionId != null) {
+            Text("✓ Answer saved", color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+        }
         Spacer(Modifier.height(110.dp))
     }
 }
@@ -394,6 +398,16 @@ private fun SubmitDialog(session: ExamSession, onDismiss: () -> Unit, onSubmit: 
 private fun ResultScreen(session: ExamSession, viewModel: AppViewModel) {
     val result = viewModel.calculateResult(session)
     val hasKey = session.answerKeys.isNotEmpty()
+    val answerKeyState by viewModel.answerKeyImportState.collectAsState()
+    val context = LocalContext.current
+    val answerPdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            viewModel.importAnswerKeyPdf(context, it)
+        }
+    }
     var keyText by remember { mutableStateOf("") }
     var importedCount by remember { mutableIntStateOf(0) }
     Scaffold(topBar = { TopAppBar(title = { Text("Result") }, navigationIcon = { BackButton(viewModel::goHome) }) }) { padding ->
@@ -406,10 +420,36 @@ private fun ResultScreen(session: ExamSession, viewModel: AppViewModel) {
                     Text("Attempted: ${result.attempted} • Unanswered: ${result.unanswered}")
                     if (hasKey) {
                         Text("Correct: ${result.correct} • Incorrect: ${result.incorrect}")
+                        Text("Scored questions: ${result.scoredQuestions} • Key missing: ${result.missingKeys}")
                         Text(String.format(Locale.US, "Accuracy: %.1f%% • Negative marks: %.2f", result.accuracyPercent, result.negativeMarksLost))
                     } else Text("Add an answer key to calculate score and accuracy.")
                 }
             }
+            Button(
+                onClick = { answerPdfLauncher.launch(arrayOf("application/pdf")) },
+                enabled = !answerKeyState.isImporting,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Default.PictureAsPdf, null)
+                Text("  Import Answer PDF")
+            }
+            if (answerKeyState.importedCount > 0) {
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(
+                            "Imported ${answerKeyState.importedCount} of ${answerKeyState.totalQuestions} explicit answers",
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        if (answerKeyState.missingQuestionNumbers.isNotEmpty()) {
+                            Text(
+                                "No explicit answer in the PDF for questions: ${answerKeyState.missingQuestionNumbers.joinToString()}",
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+            Text("Or paste an answer key", style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(
                 value = keyText,
                 onValueChange = { keyText = it },
@@ -417,11 +457,12 @@ private fun ResultScreen(session: ExamSession, viewModel: AppViewModel) {
                 label = { Text("Answer key (for example: 1-C)") },
                 supportingText = { if (importedCount > 0) Text("Imported $importedCount answers") },
             )
-            Button(onClick = { importedCount = viewModel.importAnswerKey(keyText) }, enabled = keyText.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Import Answer Key") }
+            Button(onClick = { importedCount = viewModel.importAnswerKey(keyText) }, enabled = keyText.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Import Pasted Key") }
             OutlinedButton(onClick = viewModel::showReview, modifier = Modifier.fillMaxWidth()) { Text("Review Test") }
             TextButton(onClick = viewModel::goHome, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Home, null); Text("  My Mock Tests") }
         }
     }
+    AnswerKeyImportDialogs(answerKeyState, viewModel::clearAnswerKeyImportError)
 }
 
 private enum class ReviewFilter { ALL, CORRECT, INCORRECT, UNANSWERED, MARKED }
@@ -498,6 +539,32 @@ private fun ImportDialogs(state: ImportUiState, onDismissError: () -> Unit) {
         AlertDialog(
             onDismissRequest = onDismissError,
             title = { Text("PDF could not be imported") },
+            text = { Text(message) },
+            confirmButton = { TextButton(onClick = onDismissError) { Text("OK") } },
+        )
+    }
+}
+
+@Composable
+private fun AnswerKeyImportDialogs(state: AnswerKeyImportUiState, onDismissError: () -> Unit) {
+    if (state.isImporting) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Processing answer PDF…") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(if (state.totalPages > 0) "Page ${state.currentPage} / ${state.totalPages}" else "Opening document")
+                }
+            },
+            confirmButton = {},
+        )
+    }
+    state.error?.let { message ->
+        AlertDialog(
+            onDismissRequest = onDismissError,
+            title = { Text("Answer PDF could not be imported") },
             text = { Text(message) },
             confirmButton = { TextButton(onClick = onDismissError) { Text("OK") } },
         )

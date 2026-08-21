@@ -11,6 +11,8 @@ data class ExamResult(
     val correct: Int,
     val incorrect: Int,
     val unanswered: Int,
+    val scoredQuestions: Int,
+    val missingKeys: Int,
     val score: Double,
     val maximumScore: Double,
     val accuracyPercent: Double,
@@ -32,6 +34,8 @@ object ResultCalculator {
         val incorrect = questions.count {
             it.selectedLabel != null && it.correctLabel != null && it.selectedLabel != it.correctLabel
         }
+        val scoredQuestions = questions.count { it.correctLabel != null }
+        val scoredAttempts = correct + incorrect
         val penalty = if (negativeMarkingEnabled) incorrect * incorrectMarks else 0.0
         return ExamResult(
             total = questions.size,
@@ -39,9 +43,11 @@ object ResultCalculator {
             correct = correct,
             incorrect = incorrect,
             unanswered = questions.size - attempted,
+            scoredQuestions = scoredQuestions,
+            missingKeys = questions.size - scoredQuestions,
             score = correct * correctMarks + penalty,
-            maximumScore = questions.size * correctMarks,
-            accuracyPercent = if (attempted == 0) 0.0 else correct * 100.0 / attempted,
+            maximumScore = scoredQuestions * correctMarks,
+            accuracyPercent = if (scoredAttempts == 0) 0.0 else correct * 100.0 / scoredAttempts,
             attemptPercent = if (questions.isEmpty()) 0.0 else attempted * 100.0 / questions.size,
             negativeMarksLost = -penalty,
         )

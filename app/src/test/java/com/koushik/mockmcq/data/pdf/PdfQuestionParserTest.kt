@@ -109,4 +109,69 @@ class PdfQuestionParserTest {
         assertEquals(3, result.size)
         assertTrue(result.none { it.text.contains("MOCK TEST SERIES") || it.options.last().text.contains("Page footer") })
     }
+
+    @Test
+    fun parsesTaggedMarkersAndInlineOptions() {
+        val input = """
+            Sample Questions
+            #Sample-MCQ1
+            Which sample pair is correct?
+
+            Options
+            A. Alpha only          B. Beta only            C. Both                         D. Neither
+
+            #Sample-MCQ2
+            Which sample item is third?
+
+            Options
+            A. Alpha               B. Beta C. Gamma                    D. Delta
+        """.trimIndent()
+
+        val result = parser.parsePages(listOf(input))
+
+        assertEquals(listOf(1, 2), result.map { it.number })
+        assertEquals(listOf("A", "B", "C", "D"), result.first().options.map { it.label })
+        assertEquals("Gamma", result.last().options[2].text)
+    }
+
+    @Test
+    fun parsesTaggedBareLabelsOptionsCommaAndSixChoices() {
+        val input = """
+            #Sample-MCQ16
+            Which item is matched incorrectly?
+
+            Options,
+            A First choice
+            B. Second choice
+            C. Third choice
+            D. Fourth choice
+            E. Fifth choice
+            F. Sixth choice
+        """.trimIndent()
+
+        val result = parser.parsePages(listOf(input)).single()
+
+        assertEquals(6, result.options.size)
+        assertEquals("First choice", result.options.first().text)
+        assertEquals("F", result.options.last().label)
+        assertEquals(ParsingConfidence.HIGH, result.confidence)
+    }
+
+    @Test
+    fun keepsOptionTextContainingOptionLetters() {
+        val input = """
+            #Sample-MCQ92
+            Which sample token belongs to the first choice?
+
+            Options
+            A. Token B.C,D stays here B. Second choice
+            C. Third choice              D. Fourth choice
+        """.trimIndent()
+
+        val result = parser.parsePages(listOf(input)).single()
+
+        assertEquals(listOf("A", "B", "C", "D"), result.options.map { it.label })
+        assertEquals("Token B.C,D stays here", result.options[0].text)
+        assertEquals("Second choice", result.options[1].text)
+    }
 }

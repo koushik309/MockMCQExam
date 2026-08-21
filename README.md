@@ -7,10 +7,11 @@ Offline-first Android app for importing text-based MCQ PDFs, answering questions
 - Android document picker; no broad storage permission
 - On-device PDF text extraction
 - Configurable-style parser supporting `1.`, `1)`, `Q1`, `Q.1`, `Question 1`, `(a)`, `A.`, and `A)` patterns
+- Dedicated support for tagged `#...MCQ...` markers, `Options` sections, and 4–6 choices
 - Room persistence keyed by exam ID and question ID
 - Immediate answer autosave, clear response, visited state, mark for review, question palette, and resume
 - Timestamp-based 180-minute timer with automatic submission
-- Manual answer-key input such as `1-C` and UPSC-style `+2/-0.66` scoring
+- Matching tagged answer-PDF import plus manual keys such as `1-C`, with missing keys reported rather than inferred
 - Light/dark theme and content descriptions in the question palette
 
 ## Known limitation

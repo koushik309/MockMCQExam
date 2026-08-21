@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.koushik.mockmcq.data.db.ExamStatus
 import com.koushik.mockmcq.data.db.ExamSummaryDb
+import com.koushik.mockmcq.data.pdf.PdfAnswerKeyParser
 import com.koushik.mockmcq.data.pdf.PdfExtractionResult
 import com.koushik.mockmcq.data.pdf.PdfQuestionParser
 import com.koushik.mockmcq.data.pdf.PdfTextExtractor
@@ -35,6 +36,16 @@ data class ImportUiState(
     val error: String? = null,
 )
 
+data class AnswerKeyImportUiState(
+    val isImporting: Boolean = false,
+    val currentPage: Int = 0,
+    val totalPages: Int = 0,
+    val importedCount: Int = 0,
+    val totalQuestions: Int = 0,
+    val missingQuestionNumbers: List<Int> = emptyList(),
+    val error: String? = null,
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     val exams: StateFlow<List<ExamSummaryDb>> = repository.observeExamSummaries()
@@ -47,6 +58,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
 
     val screen = MutableStateFlow(AppScreen.HOME)
     val importState = MutableStateFlow(ImportUiState())
+    val answerKeyImportState = MutableStateFlow(AnswerKeyImportUiState())
 
     fun importPdf(context: Context, uri: Uri, displayName: String) {
         viewModelScope.launch {
@@ -80,6 +92,9 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     }
 
     fun openExam(examId: String, start: Boolean = true) {
+        if (selectedExamId.value != examId) {
+            answerKeyImportState.value = AnswerKeyImportUiState()
+        }
         selectedExamId.value = examId
         viewModelScope.launch {
             val summary = exams.value.firstOrNull { it.exam.examId == examId }
@@ -108,6 +123,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun goHome() {
         screen.value = AppScreen.HOME
         selectedExamId.value = null
+        answerKeyImportState.value = AnswerKeyImportUiState()
     }
 
     fun navigateTo(index: Int) {
@@ -163,9 +179,47 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
         return parsed.size
     }
 
+    fun importAnswerKeyPdf(context: Context, uri: Uri) {
+        val current = session.value ?: return
+        viewModelScope.launch {
+            answerKeyImportState.value = AnswerKeyImportUiState(isImporting = true)
+            when (val extraction = PdfTextExtractor(context.applicationContext).extract(uri) { page, total ->
+                answerKeyImportState.update { it.copy(currentPage = page, totalPages = total) }
+            }) {
+                is PdfExtractionResult.Failure -> {
+                    answerKeyImportState.value = AnswerKeyImportUiState(error = extraction.message)
+                }
+                is PdfExtractionResult.Success -> {
+                    val parsed = PdfAnswerKeyParser().parsePages(extraction.pages)
+                    if (parsed.detectedQuestionNumbers.isEmpty()) {
+                        answerKeyImportState.value = AnswerKeyImportUiState(
+                            error = "No supported tagged MCQ answer sections were detected in this PDF.",
+                        )
+                        return@launch
+                    }
+                    val questionNumbers = current.questions.map { it.question.questionNumber }.toSet()
+                    val matchingAnswers = parsed.answers.filterKeys { it in questionNumbers }
+                    if (matchingAnswers.isEmpty()) {
+                        answerKeyImportState.value = AnswerKeyImportUiState(
+                            error = "This answer PDF does not match the current test.",
+                        )
+                        return@launch
+                    }
+                    repository.importAnswerKey(current.exam.examId, matchingAnswers)
+                    answerKeyImportState.value = AnswerKeyImportUiState(
+                        importedCount = matchingAnswers.size,
+                        totalQuestions = questionNumbers.size,
+                        missingQuestionNumbers = (questionNumbers - matchingAnswers.keys).sorted(),
+                    )
+                }
+            }
+        }
+    }
+
     fun showReview() { screen.value = AppScreen.REVIEW }
     fun showResult() { screen.value = AppScreen.RESULT }
     fun clearImportError() { importState.update { it.copy(error = null) } }
+    fun clearAnswerKeyImportError() { answerKeyImportState.update { it.copy(error = null) } }
 
     fun calculateResult(current: ExamSession): ExamResult {
         val scored = current.questions.map { question ->

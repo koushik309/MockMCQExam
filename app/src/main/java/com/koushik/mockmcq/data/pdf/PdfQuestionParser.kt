@@ -13,20 +13,31 @@ data class ParsedQuestion(
 )
 
 class PdfQuestionParser {
+    private val taggedMcqMarkerPattern = Regex(
+        """^#[\p{L}\p{N}_-]*MCQ(\d+)\s*$""",
+        RegexOption.IGNORE_CASE,
+    )
     private val questionPattern = Regex(
-        """^(?:(?:Q(?:uestion)?(?:\s+No\.?)?\s*\.?\s*)?)(\d{1,4})\s*[.)\-:]?\s+(.+)${'$'}""",
+        """^(?:(?:Q(?:uestion)?(?:\s+No\.?)?\s*\.?\s*)?)(\d{1,4})\s*[.)\-:]?\s+(.+)$""",
         RegexOption.IGNORE_CASE,
     )
     private val explicitQuestionPattern = Regex(
         """^(?:Q(?:uestion)?(?:\s+No\.?)?\s*\.?\s*)\d+""",
         RegexOption.IGNORE_CASE,
     )
-    private val optionPattern = Regex(
-        """^\s*[\[(]?([A-Ea-e])[\]).:\-]\s*(.*)${'$'}""",
+    private val optionsHeadingPattern = Regex("""^Options\s*[,.:]?\s*$""", RegexOption.IGNORE_CASE)
+    private val punctuatedOptionMarker = Regex("""(?<!\S)([A-Fa-f])[.)]([ \t]*)""")
+    private val unpunctuatedLeadingMarker = Regex("""^\s*([A-Fa-f])\s+""")
+    private val leadingPunctuatedOptionPattern = Regex(
+        """^\s*[\[(]?([A-Fa-f])[\]).:]\s*(.*)$""",
     )
+    private val leadingBareOptionPattern = Regex("""^\s*([A-Fa-f])\s+(.*)$""")
 
     fun parsePages(rawPages: List<String>): List<ParsedQuestion> {
         val pages = removeRepeatedMargins(rawPages)
+        val usesTaggedMcqMarkers = pages.any { page ->
+            page.lineSequence().any { taggedMcqMarkerPattern.matches(normalizeLine(it)) }
+        }
         val parsed = mutableListOf<ParsedQuestion>()
         var builder: QuestionBuilder? = null
         var previousWasBlank = true
@@ -40,32 +51,51 @@ class PdfQuestionParser {
                     return@forEach
                 }
 
-                val optionMatch = optionPattern.matchEntire(line)
-                if (builder != null && optionMatch != null) {
-                    builder!!.startOption(
-                        optionMatch.groupValues[1].uppercase(),
-                        optionMatch.groupValues[2].trim(),
+                taggedMcqMarkerPattern.matchEntire(line)?.let { marker ->
+                    builder?.build()?.let(parsed::add)
+                    builder = QuestionBuilder(
+                        number = marker.groupValues[1].toInt(),
+                        firstLine = "",
+                        pageNumber = pageIndex + 1,
                     )
                     previousWasBlank = false
                     return@forEach
                 }
 
-                val questionMatch = questionPattern.matchEntire(line)
-                val candidateNumber = questionMatch?.groupValues?.get(1)?.toIntOrNull()
-                val isPlausibleBoundary = questionMatch != null && (
-                    builder == null ||
-                        explicitQuestionPattern.containsMatchIn(line) ||
-                        (builder!!.options.size >= 2 && previousWasBlank &&
-                            candidateNumber == builder!!.number + 1)
-                    )
+                if (builder != null && optionsHeadingPattern.matches(line)) {
+                    builder!!.optionMode = true
+                    previousWasBlank = false
+                    return@forEach
+                }
 
-                if (isPlausibleBoundary) {
-                    builder?.build()?.let(parsed::add)
-                    builder = QuestionBuilder(
-                        number = candidateNumber!!,
-                        firstLine = questionMatch!!.groupValues[2].trim(),
-                        pageNumber = pageIndex + 1,
-                    )
+                val optionSegments = builder?.let { findOptionSegments(rawLine, it.optionMode) }.orEmpty()
+                if (builder != null && optionSegments.isNotEmpty()) {
+                    builder!!.optionMode = true
+                    optionSegments.forEach { builder!!.startOption(it.label, it.text) }
+                    previousWasBlank = false
+                    return@forEach
+                }
+
+                if (!usesTaggedMcqMarkers) {
+                    val questionMatch = questionPattern.matchEntire(line)
+                    val candidateNumber = questionMatch?.groupValues?.get(1)?.toIntOrNull()
+                    val isPlausibleBoundary = questionMatch != null && (
+                        builder == null ||
+                            explicitQuestionPattern.containsMatchIn(line) ||
+                            (builder!!.options.size >= 2 && previousWasBlank &&
+                                candidateNumber == builder!!.number + 1)
+                        )
+
+                    if (isPlausibleBoundary) {
+                        builder?.build()?.let(parsed::add)
+                        builder = QuestionBuilder(
+                            number = candidateNumber!!,
+                            firstLine = questionMatch!!.groupValues[2].trim(),
+                            pageNumber = pageIndex + 1,
+                        )
+                    } else {
+                        builder?.append(line)
+                    }
                 } else {
                     builder?.append(line)
                 }
@@ -78,6 +108,51 @@ class PdfQuestionParser {
             .filter { it.text.isNotBlank() }
             .distinctBy { it.number }
             .sortedBy { it.number }
+    }
+
+    private fun findOptionSegments(rawLine: String, optionMode: Boolean): List<ParsedOption> {
+        val cleanRaw = rawLine.replace('\u00A0', ' ').trimEnd()
+        val markers = punctuatedOptionMarker.findAll(cleanRaw).map { match ->
+            OptionMarker(
+                label = match.groupValues[1].uppercase().single(),
+                start = match.range.first,
+                contentStart = match.range.last + 1,
+                hasFollowingSpace = match.groupValues[2].isNotEmpty(),
+            )
+        }.toMutableList()
+        unpunctuatedLeadingMarker.find(cleanRaw)?.let { match ->
+            if (markers.none { it.start == match.range.first }) {
+                markers += OptionMarker(
+                    label = match.groupValues[1].uppercase().single(),
+                    start = match.range.first,
+                    contentStart = match.range.last + 1,
+                    hasFollowingSpace = true,
+                )
+            }
+        }
+        markers.sortBy(OptionMarker::start)
+        if (markers.isNotEmpty() && cleanRaw.substring(0, markers.first().start).isBlank()) {
+            val selected = mutableListOf(markers.first())
+            var expected = markers.first().label + 1
+            while (expected <= 'F') {
+                val candidates = markers.filter { it.label == expected && it.start > selected.last().start }
+                if (candidates.isEmpty()) break
+                selected += candidates.filter(OptionMarker::hasFollowingSpace).lastOrNull() ?: candidates.last()
+                expected++
+            }
+            return selected.mapIndexed { index, marker ->
+                val end = selected.getOrNull(index + 1)?.start ?: cleanRaw.length
+                ParsedOption(
+                    label = marker.label.toString(),
+                    text = normalizeLine(cleanRaw.substring(marker.contentStart, end)),
+                )
+            }
+        }
+        val normalized = normalizeLine(cleanRaw)
+        val leading = leadingPunctuatedOptionPattern.matchEntire(normalized)
+            ?: (if (optionMode) leadingBareOptionPattern.matchEntire(normalized) else null)
+            ?: return emptyList()
+        return listOf(ParsedOption(leading.groupValues[1].uppercase(), leading.groupValues[2].trim()))
     }
 
     private fun normalizeLine(line: String): String = line
@@ -107,16 +182,23 @@ class PdfQuestionParser {
         firstLine: String,
         val pageNumber: Int,
     ) {
-        private val questionLines = mutableListOf(firstLine)
+        private val questionLines = mutableListOf(firstLine).filter(String::isNotBlank).toMutableList()
         private val optionBuilders = mutableListOf<OptionBuilder>()
         val options: List<OptionBuilder> get() = optionBuilders
+        var optionMode: Boolean = false
 
         fun startOption(label: String, text: String) {
-            optionBuilders += OptionBuilder(label, mutableListOf(text).filter(String::isNotBlank).toMutableList())
+            val existing = optionBuilders.indexOfFirst { it.label == label }
+            if (existing >= 0) {
+                optionBuilders[existing].lines += text
+            } else {
+                optionBuilders += OptionBuilder(label, mutableListOf(text).filter(String::isNotBlank).toMutableList())
+            }
         }
 
         fun append(line: String) {
-            if (optionBuilders.isEmpty()) questionLines += line else optionBuilders.last().lines += line
+            if (optionMode && optionBuilders.isNotEmpty()) optionBuilders.last().lines += line
+            else questionLines += line
         }
 
         fun build(): ParsedQuestion {
@@ -124,7 +206,7 @@ class PdfQuestionParser {
                 ParsedOption(it.label, it.lines.joinToString(" ").trim())
             }
             val labels = parsedOptions.map { it.label }
-            val sequential = labels == ('A'..'E').take(labels.size).map(Char::toString)
+            val sequential = labels == ('A'..'F').take(labels.size).map(Char::toString)
             val confidence = when {
                 questionLines.joinToString(" ").isBlank() || parsedOptions.size < 2 -> ParsingConfidence.LOW
                 parsedOptions.size >= 4 && sequential && parsedOptions.none { it.text.isBlank() } -> ParsingConfidence.HIGH
@@ -141,4 +223,10 @@ class PdfQuestionParser {
     }
 
     private data class OptionBuilder(val label: String, val lines: MutableList<String>)
+    private data class OptionMarker(
+        val label: Char,
+        val start: Int,
+        val contentStart: Int,
+        val hasFollowingSpace: Boolean,
+    )
 }

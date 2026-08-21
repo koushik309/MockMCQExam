@@ -22,6 +22,21 @@ class ScoringTest {
     }
 
     @Test
+    fun excludesMissingKeysFromMaximumScoreAndAccuracy() {
+        val questions = listOf(
+            ScoredQuestion("A", "A"),
+            ScoredQuestion("B", null),
+        )
+
+        val result = ResultCalculator.calculate(questions, 2.0, -0.66, true)
+
+        assertEquals(1, result.scoredQuestions)
+        assertEquals(1, result.missingKeys)
+        assertEquals(2.0, result.maximumScore, 0.0001)
+        assertEquals(100.0, result.accuracyPercent, 0.0001)
+    }
+
+    @Test
     fun parsesCommonAnswerKeyText() {
         val parsed = AnswerKeyTextParser.parse("1-C\nQ2: b\n3)D\ninvalid")
         assertEquals(mapOf(1 to "C", 2 to "B", 3 to "D"), parsed)
