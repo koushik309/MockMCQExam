@@ -63,6 +63,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     val answerKeyImportState = MutableStateFlow(AnswerKeyImportUiState())
     val actionError = MutableStateFlow<String?>(null)
     private var pauseJob: Job? = null
+    private val recoveryJob = launchSafely { repository.recoverInterruptedExams() }
 
     fun importPdf(context: Context, uri: Uri, displayName: String) {
         viewModelScope.launch {
@@ -101,6 +102,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
         }
         selectedExamId.value = examId
         launchSafely {
+            recoveryJob.join()
             pauseJob?.join()
             pauseJob = null
             val summary = exams.value.firstOrNull { it.exam.examId == examId }
@@ -127,6 +129,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun startSelectedExam() {
         val id = selectedExamId.value ?: return
         launchSafely {
+            recoveryJob.join()
             if (!repository.startOrResume(id)) {
                 actionError.value = EMPTY_EXAM_MESSAGE
                 return@launchSafely
@@ -150,6 +153,12 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
         val pausedAt = System.currentTimeMillis()
         finishGoingHome()
         pauseJob = launchSafely { repository.pauseExam(examId, pausedAt) }
+    }
+
+    fun checkpointActiveExam(checkpointAt: Long) {
+        val current = session.value ?: return
+        if (screen.value != AppScreen.EXAM || current.exam.status != ExamStatus.IN_PROGRESS) return
+        launchSafely { repository.checkpointExamTime(current.exam.examId, checkpointAt) }
     }
 
     private fun finishGoingHome() {

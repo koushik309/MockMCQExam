@@ -28,6 +28,9 @@ interface ExamDao {
     @Query("SELECT * FROM exams WHERE examId = :examId LIMIT 1")
     suspend fun getExam(examId: String): ExamEntity?
 
+    @Query("SELECT * FROM exams WHERE status = :status")
+    suspend fun getExamsByStatus(status: String): List<ExamEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertExam(exam: ExamEntity)
 
@@ -63,6 +66,19 @@ interface ExamDao {
         examId: String,
         status: String,
         remainingTimeMillis: Long?,
+    )
+
+    @Query(
+        """
+        UPDATE exams
+        SET remainingTimeMillis = MAX(0, endAt - :checkpointAt)
+        WHERE examId = :examId AND status = :inProgressStatus AND endAt IS NOT NULL
+        """,
+    )
+    suspend fun checkpointExamTime(
+        examId: String,
+        checkpointAt: Long,
+        inProgressStatus: String,
     )
 
     @Query("UPDATE exams SET currentQuestionIndex = :index WHERE examId = :examId")

@@ -12,7 +12,7 @@ Offline-first Android app for importing text-based MCQ PDFs, answering questions
 - Immediate answer autosave, clear response, visited state, mark for review, question palette, and resume
 - Non-destructive exam-state updates preserve imported questions when starting, navigating, resuming, and submitting
 - Empty/corrupted sessions now show a recovery screen, and unexpected runtime crashes are reported on the next launch
-- Persistent 180-minute active-use timer that pauses immediately when the exam is left/backgrounded and restarts only when `Resume Test` is pressed
+- Persistent 180-minute active-use timer with per-second checkpoints; it pauses when the exam is left/backgrounded, safely recovers after process interruption, and restarts only when `Resume Test` is pressed
 - Matching tagged answer-PDF import plus manual keys such as `1-C`, with missing keys reported rather than inferred
 - Light/dark theme and content descriptions in the question palette
 

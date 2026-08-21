@@ -311,6 +311,7 @@ private fun ExamScreen(session: ExamSession, viewModel: AppViewModel, onReimport
     LaunchedEffect(exam.endAt) {
         while (exam.endAt != null && exam.status == ExamStatus.IN_PROGRESS) {
             now = System.currentTimeMillis()
+            viewModel.checkpointActiveExam(now)
             viewModel.submitIfExpired(now)
             delay(1_000)
         }

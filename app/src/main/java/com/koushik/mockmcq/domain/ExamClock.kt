@@ -9,4 +9,10 @@ object ExamClock {
 
     fun resumedEndAt(remainingMillis: Long?, now: Long): Long? =
         remainingMillis?.coerceAtLeast(0L)?.let(now::plus)
+
+    fun recoveredRemainingMillis(
+        checkpointMillis: Long?,
+        endAt: Long?,
+        recoveredAt: Long,
+    ): Long? = checkpointMillis?.coerceAtLeast(0L) ?: remainingMillis(endAt, recoveredAt)
 }

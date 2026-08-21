@@ -124,6 +124,25 @@ class ExamRepository(private val database: AppDatabase) {
         )
     }
 
+    suspend fun checkpointExamTime(examId: String, checkpointAt: Long = System.currentTimeMillis()) =
+        examStateMutex.withLock {
+            dao.checkpointExamTime(examId, checkpointAt, ExamStatus.IN_PROGRESS)
+        }
+
+    suspend fun recoverInterruptedExams(recoveredAt: Long = System.currentTimeMillis()) = examStateMutex.withLock {
+        dao.getExamsByStatus(ExamStatus.IN_PROGRESS).forEach { exam ->
+            dao.updateExamPauseState(
+                examId = exam.examId,
+                status = ExamStatus.PAUSED,
+                remainingTimeMillis = ExamClock.recoveredRemainingMillis(
+                    checkpointMillis = exam.remainingTimeMillis,
+                    endAt = exam.endAt,
+                    recoveredAt = recoveredAt,
+                ),
+            )
+        }
+    }
+
     suspend fun setCurrentQuestion(examId: String, index: Int) {
         val exam = dao.getExam(examId) ?: return
         dao.updateCurrentQuestion(examId, index.coerceIn(0, (exam.totalQuestions - 1).coerceAtLeast(0)))
