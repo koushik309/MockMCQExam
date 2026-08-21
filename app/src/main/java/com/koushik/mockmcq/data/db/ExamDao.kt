@@ -5,7 +5,6 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
-import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -32,8 +31,34 @@ interface ExamDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertExam(exam: ExamEntity)
 
-    @Update
-    suspend fun updateExam(exam: ExamEntity)
+    @Query("SELECT COUNT(*) FROM questions WHERE examId = :examId")
+    suspend fun countQuestions(examId: String): Int
+
+    @Query(
+        """
+        UPDATE exams
+        SET status = :status, startedAt = :startedAt, endAt = :endAt
+        WHERE examId = :examId
+        """,
+    )
+    suspend fun updateExamStartState(
+        examId: String,
+        status: String,
+        startedAt: Long,
+        endAt: Long?,
+    )
+
+    @Query("UPDATE exams SET currentQuestionIndex = :index WHERE examId = :examId")
+    suspend fun updateCurrentQuestion(examId: String, index: Int)
+
+    @Query(
+        """
+        UPDATE exams
+        SET status = :status, submittedAt = :submittedAt
+        WHERE examId = :examId
+        """,
+    )
+    suspend fun updateSubmissionState(examId: String, status: String, submittedAt: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertQuestions(questions: List<QuestionEntity>)

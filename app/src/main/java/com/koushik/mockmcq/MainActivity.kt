@@ -104,11 +104,14 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val app = application as MockMcqApplication
+        val previousCrash = app.consumeLastCrashReport()
         setContent {
+            var crashReport by remember { mutableStateOf(previousCrash) }
             MockMcqTheme {
-                val app = application as MockMcqApplication
                 val viewModel: AppViewModel = viewModel(factory = AppViewModel.factory(app.repository))
                 MockMcqRoot(viewModel)
+                CrashReportDialog(crashReport) { crashReport = null }
             }
         }
     }
@@ -120,6 +123,7 @@ private fun MockMcqRoot(viewModel: AppViewModel) {
     val exams by viewModel.exams.collectAsState()
     val session by viewModel.session.collectAsState()
     val importState by viewModel.importState.collectAsState()
+    val actionError by viewModel.actionError.collectAsState()
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
@@ -134,12 +138,15 @@ private fun MockMcqRoot(viewModel: AppViewModel) {
         when (screen) {
             AppScreen.HOME -> HomeScreen(exams, onImport = { launcher.launch(arrayOf("application/pdf")) }, viewModel::openExam)
             AppScreen.PARSING_REVIEW -> SessionGate(session) { ParsingReviewScreen(it, viewModel::goHome, viewModel::startSelectedExam) }
-            AppScreen.EXAM -> SessionGate(session) { ExamScreen(it, viewModel) }
+            AppScreen.EXAM -> SessionGate(session) {
+                ExamScreen(it, viewModel) { launcher.launch(arrayOf("application/pdf")) }
+            }
             AppScreen.RESULT -> SessionGate(session) { ResultScreen(it, viewModel) }
             AppScreen.REVIEW -> SessionGate(session) { ReviewScreen(it, viewModel) }
         }
     }
     ImportDialogs(importState, viewModel::clearImportError)
+    ActionErrorDialog(actionError, viewModel::clearActionError)
 }
 
 @Composable
@@ -267,10 +274,14 @@ private fun ParsingReviewScreen(session: ExamSession, onBack: () -> Unit, onStar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ExamScreen(session: ExamSession, viewModel: AppViewModel) {
+private fun ExamScreen(session: ExamSession, viewModel: AppViewModel, onReimport: () -> Unit) {
     val exam = session.exam
     val index = exam.currentQuestionIndex.coerceIn(0, (session.questions.size - 1).coerceAtLeast(0))
-    val question = session.questions.getOrNull(index) ?: return
+    val question = session.questions.getOrNull(index)
+    if (question == null) {
+        EmptyExamScreen(exam.examName, viewModel::goHome, onReimport)
+        return
+    }
     val answer = session.answers[question.question.questionId]
     var showPalette by remember { mutableStateOf(false) }
     var showSubmit by remember { mutableStateOf(false) }
@@ -317,6 +328,33 @@ private fun ExamScreen(session: ExamSession, viewModel: AppViewModel) {
     }
     if (showPalette) QuestionPalette(session, onDismiss = { showPalette = false }) { viewModel.navigateTo(it); showPalette = false }
     if (showSubmit) SubmitDialog(session, onDismiss = { showSubmit = false }, onSubmit = viewModel::submit)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EmptyExamScreen(examName: String, onBack: () -> Unit, onReimport: () -> Unit) {
+    Scaffold(
+        topBar = { TopAppBar(title = { Text(examName) }, navigationIcon = { BackButton(onBack) }) },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) {
+            OutlinedCard(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Default.Warning, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.error)
+                    Text("No questions are stored", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("This saved test is incomplete. Import the question PDF again to create a fresh test.")
+                    Button(onClick = onReimport, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.PictureAsPdf, null)
+                        Text("  Import Question PDF")
+                    }
+                    TextButton(onClick = onBack) { Text("Return to My Mock Tests") }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -541,6 +579,35 @@ private fun ImportDialogs(state: ImportUiState, onDismissError: () -> Unit) {
             title = { Text("PDF could not be imported") },
             text = { Text(message) },
             confirmButton = { TextButton(onClick = onDismissError) { Text("OK") } },
+        )
+    }
+}
+
+@Composable
+private fun ActionErrorDialog(message: String?, onDismiss: () -> Unit) {
+    message?.let {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Exam could not be opened") },
+            text = { Text(it) },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("OK") } },
+        )
+    }
+}
+
+@Composable
+private fun CrashReportDialog(report: String?, onDismiss: () -> Unit) {
+    report?.let {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("The previous session crashed") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Please take a screenshot of the details below if the problem continues.")
+                    Text(it.take(3_500), Modifier.height(260.dp).verticalScroll(rememberScrollState()))
+                }
+            },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("Dismiss") } },
         )
     }
 }

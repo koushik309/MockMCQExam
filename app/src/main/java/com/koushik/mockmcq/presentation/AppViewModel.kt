@@ -18,6 +18,7 @@ import com.koushik.mockmcq.domain.ExamResult
 import com.koushik.mockmcq.domain.ResultCalculator
 import com.koushik.mockmcq.domain.ScoredQuestion
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -59,6 +60,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     val screen = MutableStateFlow(AppScreen.HOME)
     val importState = MutableStateFlow(ImportUiState())
     val answerKeyImportState = MutableStateFlow(AnswerKeyImportUiState())
+    val actionError = MutableStateFlow<String?>(null)
 
     fun importPdf(context: Context, uri: Uri, displayName: String) {
         viewModelScope.launch {
@@ -96,12 +98,21 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
             answerKeyImportState.value = AnswerKeyImportUiState()
         }
         selectedExamId.value = examId
-        viewModelScope.launch {
+        launchSafely {
             val summary = exams.value.firstOrNull { it.exam.examId == examId }
+            if (!repository.hasQuestions(examId)) {
+                selectedExamId.value = null
+                screen.value = AppScreen.HOME
+                actionError.value = EMPTY_EXAM_MESSAGE
+                return@launchSafely
+            }
             if (summary?.exam?.status == ExamStatus.SUBMITTED) {
                 screen.value = AppScreen.RESULT
             } else if (start) {
-                repository.startOrResume(examId)
+                if (!repository.startOrResume(examId)) {
+                    actionError.value = EMPTY_EXAM_MESSAGE
+                    return@launchSafely
+                }
                 screen.value = AppScreen.EXAM
             } else {
                 screen.value = AppScreen.PARSING_REVIEW
@@ -111,12 +122,15 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
 
     fun startSelectedExam() {
         val id = selectedExamId.value ?: return
-        viewModelScope.launch {
-            repository.startOrResume(id)
-            screen.value = AppScreen.EXAM
+        launchSafely {
+            if (!repository.startOrResume(id)) {
+                actionError.value = EMPTY_EXAM_MESSAGE
+                return@launchSafely
+            }
             session.value?.questions?.getOrNull(session.value?.exam?.currentQuestionIndex ?: 0)?.let {
                 repository.markVisited(id, it.question.questionId)
             }
+            screen.value = AppScreen.EXAM
         }
     }
 
@@ -129,7 +143,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun navigateTo(index: Int) {
         val current = session.value ?: return
         if (index !in current.questions.indices) return
-        viewModelScope.launch {
+        launchSafely {
             repository.setCurrentQuestion(current.exam.examId, index)
             repository.markVisited(current.exam.examId, current.questions[index].question.questionId)
         }
@@ -138,7 +152,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun selectOption(optionId: String) {
         val current = session.value ?: return
         val question = current.questions.getOrNull(current.exam.currentQuestionIndex) ?: return
-        viewModelScope.launch {
+        launchSafely {
             repository.selectAnswer(current.exam.examId, question.question.questionId, optionId)
         }
     }
@@ -146,18 +160,18 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun clearResponse() {
         val current = session.value ?: return
         val question = current.questions.getOrNull(current.exam.currentQuestionIndex) ?: return
-        viewModelScope.launch { repository.clearAnswer(current.exam.examId, question.question.questionId) }
+        launchSafely { repository.clearAnswer(current.exam.examId, question.question.questionId) }
     }
 
     fun toggleMarked() {
         val current = session.value ?: return
         val question = current.questions.getOrNull(current.exam.currentQuestionIndex) ?: return
-        viewModelScope.launch { repository.toggleMarked(current.exam.examId, question.question.questionId) }
+        launchSafely { repository.toggleMarked(current.exam.examId, question.question.questionId) }
     }
 
     fun submit() {
         val id = session.value?.exam?.examId ?: return
-        viewModelScope.launch {
+        launchSafely {
             repository.submit(id)
             screen.value = AppScreen.RESULT
         }
@@ -220,6 +234,19 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun showResult() { screen.value = AppScreen.RESULT }
     fun clearImportError() { importState.update { it.copy(error = null) } }
     fun clearAnswerKeyImportError() { answerKeyImportState.update { it.copy(error = null) } }
+    fun clearActionError() { actionError.value = null }
+
+    private fun launchSafely(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                action()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                actionError.value = "The operation failed: ${error.message ?: error::class.java.simpleName}"
+            }
+        }
+    }
 
     fun calculateResult(current: ExamSession): ExamResult {
         val scored = current.questions.map { question ->
@@ -237,6 +264,9 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     }
 
     companion object {
+        private const val EMPTY_EXAM_MESSAGE =
+            "No stored questions were found for this test. The previous app version may have damaged it. Import the question PDF again to create a fresh test."
+
         fun factory(repository: ExamRepository): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")

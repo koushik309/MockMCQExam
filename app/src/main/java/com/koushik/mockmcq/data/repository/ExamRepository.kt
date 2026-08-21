@@ -90,23 +90,26 @@ class ExamRepository(private val database: AppDatabase) {
         examId
     }
 
-    suspend fun startOrResume(examId: String) {
-        val exam = dao.getExam(examId) ?: return
+    suspend fun hasQuestions(examId: String): Boolean = dao.countQuestions(examId) > 0
+
+    suspend fun startOrResume(examId: String): Boolean {
+        if (!hasQuestions(examId)) return false
+        val exam = dao.getExam(examId) ?: return false
         if (exam.status == ExamStatus.NOT_STARTED) {
             val now = System.currentTimeMillis()
-            dao.updateExam(
-                exam.copy(
-                    status = ExamStatus.IN_PROGRESS,
-                    startedAt = now,
-                    endAt = exam.durationMinutes?.let { now + it * 60_000L },
-                ),
+            dao.updateExamStartState(
+                examId = examId,
+                status = ExamStatus.IN_PROGRESS,
+                startedAt = now,
+                endAt = exam.durationMinutes?.let { now + it * 60_000L },
             )
         }
+        return true
     }
 
     suspend fun setCurrentQuestion(examId: String, index: Int) {
         val exam = dao.getExam(examId) ?: return
-        dao.updateExam(exam.copy(currentQuestionIndex = index.coerceIn(0, (exam.totalQuestions - 1).coerceAtLeast(0))))
+        dao.updateCurrentQuestion(examId, index.coerceIn(0, (exam.totalQuestions - 1).coerceAtLeast(0)))
     }
 
     suspend fun selectAnswer(examId: String, questionId: String, optionId: String) =
@@ -152,7 +155,7 @@ class ExamRepository(private val database: AppDatabase) {
 
     suspend fun submit(examId: String) {
         val exam = dao.getExam(examId) ?: return
-        dao.updateExam(exam.copy(status = ExamStatus.SUBMITTED, submittedAt = System.currentTimeMillis()))
+        dao.updateSubmissionState(examId, ExamStatus.SUBMITTED, System.currentTimeMillis())
     }
 
     suspend fun importAnswerKey(examId: String, keyByNumber: Map<Int, String>) {
