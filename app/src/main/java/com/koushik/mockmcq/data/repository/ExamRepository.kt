@@ -113,10 +113,10 @@ class ExamRepository(private val database: AppDatabase) {
         true
     }
 
-    suspend fun pauseExam(examId: String) = examStateMutex.withLock {
+    suspend fun pauseExam(examId: String, pausedAt: Long = System.currentTimeMillis()) = examStateMutex.withLock {
         val exam = dao.getExam(examId) ?: return@withLock
         if (exam.status != ExamStatus.IN_PROGRESS) return@withLock
-        val remaining = ExamClock.remainingMillis(exam.endAt, System.currentTimeMillis())
+        val remaining = ExamClock.remainingMillis(exam.endAt, pausedAt)
         dao.updateExamPauseState(
             examId = examId,
             status = ExamStatus.PAUSED,

@@ -19,6 +19,7 @@ import com.koushik.mockmcq.domain.ResultCalculator
 import com.koushik.mockmcq.domain.ScoredQuestion
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -61,6 +62,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     val importState = MutableStateFlow(ImportUiState())
     val answerKeyImportState = MutableStateFlow(AnswerKeyImportUiState())
     val actionError = MutableStateFlow<String?>(null)
+    private var pauseJob: Job? = null
 
     fun importPdf(context: Context, uri: Uri, displayName: String) {
         viewModelScope.launch {
@@ -99,6 +101,8 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
         }
         selectedExamId.value = examId
         launchSafely {
+            pauseJob?.join()
+            pauseJob = null
             val summary = exams.value.firstOrNull { it.exam.examId == examId }
             if (!repository.hasQuestions(examId)) {
                 selectedExamId.value = null
@@ -135,27 +139,17 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     }
 
     fun goHome() {
-        val current = session.value
-        if (screen.value == AppScreen.EXAM && current != null) {
-            launchSafely {
-                repository.pauseExam(current.exam.examId)
-                finishGoingHome()
-            }
-            return
-        }
-        finishGoingHome()
+        if (screen.value == AppScreen.EXAM) pauseAndLeaveActiveExam()
+        else finishGoingHome()
     }
 
-    fun pauseActiveExam() {
+    fun pauseAndLeaveActiveExam() {
         val current = session.value ?: return
         if (screen.value != AppScreen.EXAM) return
-        launchSafely { repository.pauseExam(current.exam.examId) }
-    }
-
-    fun resumeActiveExam() {
-        val current = session.value ?: return
-        if (screen.value != AppScreen.EXAM || current.exam.status == ExamStatus.SUBMITTED) return
-        launchSafely { repository.startOrResume(current.exam.examId) }
+        val examId = current.exam.examId
+        val pausedAt = System.currentTimeMillis()
+        finishGoingHome()
+        pauseJob = launchSafely { repository.pauseExam(examId, pausedAt) }
     }
 
     private fun finishGoingHome() {
@@ -260,7 +254,7 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     fun clearAnswerKeyImportError() { answerKeyImportState.update { it.copy(error = null) } }
     fun clearActionError() { actionError.value = null }
 
-    private fun launchSafely(action: suspend () -> Unit) {
+    private fun launchSafely(action: suspend () -> Unit): Job =
         viewModelScope.launch {
             try {
                 action()
@@ -270,7 +264,6 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
                 actionError.value = "The operation failed: ${error.message ?: error::class.java.simpleName}"
             }
         }
-    }
 
     fun calculateResult(current: ExamSession): ExamResult {
         val scored = current.questions.map { question ->

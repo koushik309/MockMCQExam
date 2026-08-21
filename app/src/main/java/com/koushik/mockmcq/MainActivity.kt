@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -140,10 +141,8 @@ private fun MockMcqRoot(viewModel: AppViewModel) {
     }
     DisposableEffect(lifecycleOwner, viewModel) {
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_STOP -> viewModel.pauseActiveExam()
-                Lifecycle.Event.ON_START -> viewModel.resumeActiveExam()
-                else -> Unit
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                viewModel.pauseAndLeaveActiveExam()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -240,7 +239,11 @@ private fun ExamCard(summary: ExamSummaryDb, onOpen: () -> Unit) {
             Text(
                 when (exam.status) {
                     ExamStatus.NOT_STARTED -> "Status: Not started"
-                    ExamStatus.PAUSED -> "Status: Paused • Last question ${exam.currentQuestionIndex + 1}"
+                    ExamStatus.PAUSED -> listOfNotNull(
+                        "Status: Paused",
+                        exam.remainingTimeMillis?.let { "${formatRemaining(it)} remaining" },
+                        "Last question ${exam.currentQuestionIndex + 1}",
+                    ).joinToString(" • ")
                     ExamStatus.IN_PROGRESS -> "Status: In progress • Last question ${exam.currentQuestionIndex + 1}"
                     else -> "Status: Completed"
                 },
@@ -300,6 +303,7 @@ private fun ExamScreen(session: ExamSession, viewModel: AppViewModel, onReimport
         return
     }
     val answer = session.answers[question.question.questionId]
+    BackHandler(onBack = viewModel::goHome)
     var showPalette by remember { mutableStateOf(false) }
     var showSubmit by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
