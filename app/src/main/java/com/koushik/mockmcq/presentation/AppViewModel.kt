@@ -1,0 +1,193 @@
+package com.koushik.mockmcq.presentation
+
+import android.content.Context
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.koushik.mockmcq.data.db.ExamStatus
+import com.koushik.mockmcq.data.db.ExamSummaryDb
+import com.koushik.mockmcq.data.pdf.PdfExtractionResult
+import com.koushik.mockmcq.data.pdf.PdfQuestionParser
+import com.koushik.mockmcq.data.pdf.PdfTextExtractor
+import com.koushik.mockmcq.data.repository.ExamRepository
+import com.koushik.mockmcq.data.repository.ExamSession
+import com.koushik.mockmcq.domain.AnswerKeyTextParser
+import com.koushik.mockmcq.domain.ExamResult
+import com.koushik.mockmcq.domain.ResultCalculator
+import com.koushik.mockmcq.domain.ScoredQuestion
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+enum class AppScreen { HOME, PARSING_REVIEW, EXAM, RESULT, REVIEW }
+
+data class ImportUiState(
+    val isImporting: Boolean = false,
+    val currentPage: Int = 0,
+    val totalPages: Int = 0,
+    val error: String? = null,
+)
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class AppViewModel(private val repository: ExamRepository) : ViewModel() {
+    val exams: StateFlow<List<ExamSummaryDb>> = repository.observeExamSummaries()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val selectedExamId = MutableStateFlow<String?>(null)
+    val session: StateFlow<ExamSession?> = selectedExamId.flatMapLatest { examId ->
+        if (examId == null) flowOf(null) else repository.observeSession(examId)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val screen = MutableStateFlow(AppScreen.HOME)
+    val importState = MutableStateFlow(ImportUiState())
+
+    fun importPdf(context: Context, uri: Uri, displayName: String) {
+        viewModelScope.launch {
+            importState.value = ImportUiState(isImporting = true)
+            when (val extraction = PdfTextExtractor(context.applicationContext).extract(uri) { page, total ->
+                importState.update { it.copy(currentPage = page, totalPages = total) }
+            }) {
+                is PdfExtractionResult.Failure -> {
+                    importState.value = ImportUiState(error = extraction.message)
+                }
+                is PdfExtractionResult.Success -> {
+                    val questions = PdfQuestionParser().parsePages(extraction.pages)
+                    if (questions.isEmpty()) {
+                        importState.value = ImportUiState(
+                            error = "No MCQ questions were detected. Please try a text-based PDF using numbered questions and lettered options.",
+                        )
+                        return@launch
+                    }
+                    val examId = repository.createExam(
+                        name = displayName.substringBeforeLast('.').ifBlank { "Imported Mock Test" },
+                        pdfName = displayName,
+                        pdfUri = uri.toString(),
+                        parsedQuestions = questions,
+                    )
+                    selectedExamId.value = examId
+                    importState.value = ImportUiState()
+                    screen.value = AppScreen.PARSING_REVIEW
+                }
+            }
+        }
+    }
+
+    fun openExam(examId: String, start: Boolean = true) {
+        selectedExamId.value = examId
+        viewModelScope.launch {
+            val summary = exams.value.firstOrNull { it.exam.examId == examId }
+            if (summary?.exam?.status == ExamStatus.SUBMITTED) {
+                screen.value = AppScreen.RESULT
+            } else if (start) {
+                repository.startOrResume(examId)
+                screen.value = AppScreen.EXAM
+            } else {
+                screen.value = AppScreen.PARSING_REVIEW
+            }
+        }
+    }
+
+    fun startSelectedExam() {
+        val id = selectedExamId.value ?: return
+        viewModelScope.launch {
+            repository.startOrResume(id)
+            screen.value = AppScreen.EXAM
+            session.value?.questions?.getOrNull(session.value?.exam?.currentQuestionIndex ?: 0)?.let {
+                repository.markVisited(id, it.question.questionId)
+            }
+        }
+    }
+
+    fun goHome() {
+        screen.value = AppScreen.HOME
+        selectedExamId.value = null
+    }
+
+    fun navigateTo(index: Int) {
+        val current = session.value ?: return
+        if (index !in current.questions.indices) return
+        viewModelScope.launch {
+            repository.setCurrentQuestion(current.exam.examId, index)
+            repository.markVisited(current.exam.examId, current.questions[index].question.questionId)
+        }
+    }
+
+    fun selectOption(optionId: String) {
+        val current = session.value ?: return
+        val question = current.questions.getOrNull(current.exam.currentQuestionIndex) ?: return
+        viewModelScope.launch {
+            repository.selectAnswer(current.exam.examId, question.question.questionId, optionId)
+        }
+    }
+
+    fun clearResponse() {
+        val current = session.value ?: return
+        val question = current.questions.getOrNull(current.exam.currentQuestionIndex) ?: return
+        viewModelScope.launch { repository.clearAnswer(current.exam.examId, question.question.questionId) }
+    }
+
+    fun toggleMarked() {
+        val current = session.value ?: return
+        val question = current.questions.getOrNull(current.exam.currentQuestionIndex) ?: return
+        viewModelScope.launch { repository.toggleMarked(current.exam.examId, question.question.questionId) }
+    }
+
+    fun submit() {
+        val id = session.value?.exam?.examId ?: return
+        viewModelScope.launch {
+            repository.submit(id)
+            screen.value = AppScreen.RESULT
+        }
+    }
+
+    fun submitIfExpired(now: Long) {
+        val current = session.value ?: return
+        if (current.exam.status == ExamStatus.IN_PROGRESS && current.exam.endAt?.let { it <= now } == true) {
+            submit()
+        }
+    }
+
+    fun importAnswerKey(text: String): Int {
+        val current = session.value ?: return 0
+        val parsed = AnswerKeyTextParser.parse(text)
+        if (parsed.isNotEmpty()) {
+            viewModelScope.launch { repository.importAnswerKey(current.exam.examId, parsed) }
+        }
+        return parsed.size
+    }
+
+    fun showReview() { screen.value = AppScreen.REVIEW }
+    fun showResult() { screen.value = AppScreen.RESULT }
+    fun clearImportError() { importState.update { it.copy(error = null) } }
+
+    fun calculateResult(current: ExamSession): ExamResult {
+        val scored = current.questions.map { question ->
+            val answer = current.answers[question.question.questionId]
+            val selectedLabel = question.options.firstOrNull { it.optionId == answer?.selectedOptionId }?.optionLabel
+            val correctLabel = current.answerKeys[question.question.questionId]?.correctOptionLabel
+            ScoredQuestion(selectedLabel, correctLabel)
+        }
+        return ResultCalculator.calculate(
+            questions = scored,
+            correctMarks = current.exam.correctMarks,
+            incorrectMarks = current.exam.incorrectMarks,
+            negativeMarkingEnabled = current.exam.negativeMarkingEnabled,
+        )
+    }
+
+    companion object {
+        fun factory(repository: ExamRepository): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    AppViewModel(repository) as T
+            }
+    }
+}
