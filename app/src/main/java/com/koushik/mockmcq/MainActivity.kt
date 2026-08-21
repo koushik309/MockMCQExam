@@ -70,6 +70,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -87,6 +88,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.koushik.mockmcq.data.db.AnswerEntity
 import com.koushik.mockmcq.data.db.ExamStatus
 import com.koushik.mockmcq.data.db.ExamSummaryDb
@@ -125,6 +129,7 @@ private fun MockMcqRoot(viewModel: AppViewModel) {
     val importState by viewModel.importState.collectAsState()
     val actionError by viewModel.actionError.collectAsState()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let {
             runCatching {
@@ -132,6 +137,17 @@ private fun MockMcqRoot(viewModel: AppViewModel) {
             }
             viewModel.importPdf(context, it, displayName(context, it))
         }
+    }
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> viewModel.pauseActiveExam()
+                Lifecycle.Event.ON_START -> viewModel.resumeActiveExam()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Surface(Modifier.fillMaxSize()) {
@@ -167,7 +183,7 @@ private fun HomeScreen(
     val visible = exams.filter { summary ->
         summary.exam.examName.contains(search, ignoreCase = true) && when (filter) {
             "Not Started" -> summary.exam.status == ExamStatus.NOT_STARTED
-            "In Progress" -> summary.exam.status == ExamStatus.IN_PROGRESS
+            "In Progress" -> summary.exam.status == ExamStatus.IN_PROGRESS || summary.exam.status == ExamStatus.PAUSED
             "Completed" -> summary.exam.status == ExamStatus.SUBMITTED
             else -> true
         }
@@ -224,6 +240,7 @@ private fun ExamCard(summary: ExamSummaryDb, onOpen: () -> Unit) {
             Text(
                 when (exam.status) {
                     ExamStatus.NOT_STARTED -> "Status: Not started"
+                    ExamStatus.PAUSED -> "Status: Paused • Last question ${exam.currentQuestionIndex + 1}"
                     ExamStatus.IN_PROGRESS -> "Status: In progress • Last question ${exam.currentQuestionIndex + 1}"
                     else -> "Status: Completed"
                 },

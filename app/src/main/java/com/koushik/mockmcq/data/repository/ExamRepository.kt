@@ -11,6 +11,7 @@ import com.koushik.mockmcq.data.db.OptionEntity
 import com.koushik.mockmcq.data.db.QuestionEntity
 import com.koushik.mockmcq.data.db.QuestionWithOptions
 import com.koushik.mockmcq.data.pdf.ParsedQuestion
+import com.koushik.mockmcq.domain.ExamClock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
@@ -27,6 +28,7 @@ data class ExamSession(
 class ExamRepository(private val database: AppDatabase) {
     private val dao = database.examDao()
     private val answerMutex = Mutex()
+    private val examStateMutex = Mutex()
 
     fun observeExamSummaries(): Flow<List<ExamSummaryDb>> = dao.observeExamSummaries()
 
@@ -92,19 +94,34 @@ class ExamRepository(private val database: AppDatabase) {
 
     suspend fun hasQuestions(examId: String): Boolean = dao.countQuestions(examId) > 0
 
-    suspend fun startOrResume(examId: String): Boolean {
-        if (!hasQuestions(examId)) return false
-        val exam = dao.getExam(examId) ?: return false
-        if (exam.status == ExamStatus.NOT_STARTED) {
+    suspend fun startOrResume(examId: String): Boolean = examStateMutex.withLock {
+        if (!hasQuestions(examId)) return@withLock false
+        val exam = dao.getExam(examId) ?: return@withLock false
+        if (exam.status == ExamStatus.SUBMITTED) return@withLock true
+        if (exam.status == ExamStatus.NOT_STARTED || exam.status == ExamStatus.PAUSED || exam.endAt == null) {
             val now = System.currentTimeMillis()
+            val remaining = exam.remainingTimeMillis
+                ?: ExamClock.initialRemainingMillis(exam.durationMinutes)
             dao.updateExamStartState(
                 examId = examId,
                 status = ExamStatus.IN_PROGRESS,
                 startedAt = now,
-                endAt = exam.durationMinutes?.let { now + it * 60_000L },
+                endAt = ExamClock.resumedEndAt(remaining, now),
+                remainingTimeMillis = remaining,
             )
         }
-        return true
+        true
+    }
+
+    suspend fun pauseExam(examId: String) = examStateMutex.withLock {
+        val exam = dao.getExam(examId) ?: return@withLock
+        if (exam.status != ExamStatus.IN_PROGRESS) return@withLock
+        val remaining = ExamClock.remainingMillis(exam.endAt, System.currentTimeMillis())
+        dao.updateExamPauseState(
+            examId = examId,
+            status = ExamStatus.PAUSED,
+            remainingTimeMillis = remaining,
+        )
     }
 
     suspend fun setCurrentQuestion(examId: String, index: Int) {

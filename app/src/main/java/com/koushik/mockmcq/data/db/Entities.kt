@@ -10,6 +10,7 @@ import androidx.room.Relation
 object ExamStatus {
     const val NOT_STARTED = "NOT_STARTED"
     const val IN_PROGRESS = "IN_PROGRESS"
+    const val PAUSED = "PAUSED"
     const val SUBMITTED = "SUBMITTED"
 }
 
@@ -31,6 +32,7 @@ data class ExamEntity(
     val status: String = ExamStatus.NOT_STARTED,
     val startedAt: Long? = null,
     val endAt: Long? = null,
+    val remainingTimeMillis: Long? = null,
     val submittedAt: Long? = null,
     val durationMinutes: Int? = 180,
     val correctMarks: Double = 2.0,

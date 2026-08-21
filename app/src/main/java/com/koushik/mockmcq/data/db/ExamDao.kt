@@ -37,7 +37,10 @@ interface ExamDao {
     @Query(
         """
         UPDATE exams
-        SET status = :status, startedAt = :startedAt, endAt = :endAt
+        SET status = :status,
+            startedAt = COALESCE(startedAt, :startedAt),
+            endAt = :endAt,
+            remainingTimeMillis = :remainingTimeMillis
         WHERE examId = :examId
         """,
     )
@@ -46,6 +49,20 @@ interface ExamDao {
         status: String,
         startedAt: Long,
         endAt: Long?,
+        remainingTimeMillis: Long?,
+    )
+
+    @Query(
+        """
+        UPDATE exams
+        SET status = :status, endAt = NULL, remainingTimeMillis = :remainingTimeMillis
+        WHERE examId = :examId
+        """,
+    )
+    suspend fun updateExamPauseState(
+        examId: String,
+        status: String,
+        remainingTimeMillis: Long?,
     )
 
     @Query("UPDATE exams SET currentQuestionIndex = :index WHERE examId = :examId")
@@ -54,7 +71,7 @@ interface ExamDao {
     @Query(
         """
         UPDATE exams
-        SET status = :status, submittedAt = :submittedAt
+        SET status = :status, submittedAt = :submittedAt, endAt = NULL
         WHERE examId = :examId
         """,
     )

@@ -135,6 +135,30 @@ class AppViewModel(private val repository: ExamRepository) : ViewModel() {
     }
 
     fun goHome() {
+        val current = session.value
+        if (screen.value == AppScreen.EXAM && current != null) {
+            launchSafely {
+                repository.pauseExam(current.exam.examId)
+                finishGoingHome()
+            }
+            return
+        }
+        finishGoingHome()
+    }
+
+    fun pauseActiveExam() {
+        val current = session.value ?: return
+        if (screen.value != AppScreen.EXAM) return
+        launchSafely { repository.pauseExam(current.exam.examId) }
+    }
+
+    fun resumeActiveExam() {
+        val current = session.value ?: return
+        if (screen.value != AppScreen.EXAM || current.exam.status == ExamStatus.SUBMITTED) return
+        launchSafely { repository.startOrResume(current.exam.examId) }
+    }
+
+    private fun finishGoingHome() {
         screen.value = AppScreen.HOME
         selectedExamId.value = null
         answerKeyImportState.value = AnswerKeyImportUiState()
