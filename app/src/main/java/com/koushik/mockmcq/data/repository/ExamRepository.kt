@@ -61,7 +61,7 @@ class ExamRepository(private val database: AppDatabase) {
             importedAt = System.currentTimeMillis(),
             totalQuestions = parsedQuestions.size,
         )
-        dao.upsertExam(exam)
+        dao.insertExam(exam)
         val questionEntities = parsedQuestions.map { parsed ->
             QuestionEntity(
                 questionId = "$examId-q-${parsed.number}",
@@ -94,7 +94,7 @@ class ExamRepository(private val database: AppDatabase) {
         val exam = dao.getExam(examId) ?: return
         if (exam.status == ExamStatus.NOT_STARTED) {
             val now = System.currentTimeMillis()
-            dao.upsertExam(
+            dao.updateExam(
                 exam.copy(
                     status = ExamStatus.IN_PROGRESS,
                     startedAt = now,
@@ -106,7 +106,7 @@ class ExamRepository(private val database: AppDatabase) {
 
     suspend fun setCurrentQuestion(examId: String, index: Int) {
         val exam = dao.getExam(examId) ?: return
-        dao.upsertExam(exam.copy(currentQuestionIndex = index.coerceIn(0, (exam.totalQuestions - 1).coerceAtLeast(0))))
+        dao.updateExam(exam.copy(currentQuestionIndex = index.coerceIn(0, (exam.totalQuestions - 1).coerceAtLeast(0))))
     }
 
     suspend fun selectAnswer(examId: String, questionId: String, optionId: String) =
@@ -152,7 +152,7 @@ class ExamRepository(private val database: AppDatabase) {
 
     suspend fun submit(examId: String) {
         val exam = dao.getExam(examId) ?: return
-        dao.upsertExam(exam.copy(status = ExamStatus.SUBMITTED, submittedAt = System.currentTimeMillis()))
+        dao.updateExam(exam.copy(status = ExamStatus.SUBMITTED, submittedAt = System.currentTimeMillis()))
     }
 
     suspend fun importAnswerKey(examId: String, keyByNumber: Map<Int, String>) {

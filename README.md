@@ -10,6 +10,7 @@ Offline-first Android app for importing text-based MCQ PDFs, answering questions
 - Dedicated support for tagged `#...MCQ...` markers, `Options` sections, and 4–6 choices
 - Room persistence keyed by exam ID and question ID
 - Immediate answer autosave, clear response, visited state, mark for review, question palette, and resume
+- Non-destructive exam-state updates preserve imported questions when starting, navigating, resuming, and submitting
 - Timestamp-based 180-minute timer with automatic submission
 - Matching tagged answer-PDF import plus manual keys such as `1-C`, with missing keys reported rather than inferred
 - Light/dark theme and content descriptions in the question palette
