@@ -13,20 +13,19 @@ data class ParsedQuestion(
 )
 
 class PdfQuestionParser {
-    private val taggedMcqMarkerPattern = Regex(
-        """^#[\p{L}\p{N}_-]*MCQ(\d+)\s*$""",
-        RegexOption.IGNORE_CASE,
-    )
     private val questionPattern = Regex(
-        """^(?:(?:Q(?:uestion)?(?:\s+No\.?)?\s*\.?\s*)?)(\d{1,4})\s*[.)\-:]?\s+(.+)$""",
+        """^(?:(?:Q(?:uestion)?(?:\s+No\.?)?\s*[.:#\-]?\s*)?)(\d{1,4})\s*[.)\-:]?\s+(.+)$""",
         RegexOption.IGNORE_CASE,
     )
     private val explicitQuestionPattern = Regex(
-        """^(?:Q(?:uestion)?(?:\s+No\.?)?\s*\.?\s*)\d+""",
+        """^(?:Q(?:uestion)?(?:\s+No\.?)?\s*[.:#\-]?\s*)\d+""",
         RegexOption.IGNORE_CASE,
     )
-    private val optionsHeadingPattern = Regex("""^Options\s*[,.:]?\s*$""", RegexOption.IGNORE_CASE)
-    private val punctuatedOptionMarker = Regex("""(?<!\S)([A-Fa-f])[.)]([ \t]*)""")
+    private val optionsHeadingPattern = Regex(
+        """^(?:Options?|Choices?|Answer\s+Choices?)\s*[,.:]?\s*$""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val punctuatedOptionMarker = Regex("""(?<!\S)[\[(]?([A-Fa-f])[\]).:]([ \t]*)""")
     private val unpunctuatedLeadingMarker = Regex("""^\s*([A-Fa-f])\s+""")
     private val leadingPunctuatedOptionPattern = Regex(
         """^\s*[\[(]?([A-Fa-f])[\]).:]\s*(.*)$""",
@@ -36,7 +35,7 @@ class PdfQuestionParser {
     fun parsePages(rawPages: List<String>): List<ParsedQuestion> {
         val pages = removeRepeatedMargins(rawPages)
         val usesTaggedMcqMarkers = pages.any { page ->
-            page.lineSequence().any { taggedMcqMarkerPattern.matches(normalizeLine(it)) }
+            page.lineSequence().any { McqBoundaryPatterns.matches(normalizeLine(it)) }
         }
         val parsed = mutableListOf<ParsedQuestion>()
         var builder: QuestionBuilder? = null
@@ -51,11 +50,11 @@ class PdfQuestionParser {
                     return@forEach
                 }
 
-                taggedMcqMarkerPattern.matchEntire(line)?.let { marker ->
+                McqBoundaryPatterns.match(line)?.let { marker ->
                     builder?.build()?.let(parsed::add)
                     builder = QuestionBuilder(
-                        number = marker.groupValues[1].toInt(),
-                        firstLine = "",
+                        number = marker.number,
+                        firstLine = marker.questionText,
                         pageNumber = pageIndex + 1,
                     )
                     previousWasBlank = false
@@ -76,26 +75,22 @@ class PdfQuestionParser {
                     return@forEach
                 }
 
-                if (!usesTaggedMcqMarkers) {
-                    val questionMatch = questionPattern.matchEntire(line)
-                    val candidateNumber = questionMatch?.groupValues?.get(1)?.toIntOrNull()
-                    val isPlausibleBoundary = questionMatch != null && (
-                        builder == null ||
-                            explicitQuestionPattern.containsMatchIn(line) ||
-                            (builder!!.options.size >= 2 && previousWasBlank &&
-                                candidateNumber == builder!!.number + 1)
-                        )
+                val questionMatch = questionPattern.matchEntire(line)
+                val candidateNumber = questionMatch?.groupValues?.get(1)?.toIntOrNull()
+                val isExplicitBoundary = questionMatch != null && explicitQuestionPattern.containsMatchIn(line)
+                val isSequentialBoundary = questionMatch != null && builder != null &&
+                    builder!!.options.size >= 2 && previousWasBlank && candidateNumber == builder!!.number + 1
+                val isPlausibleBoundary = questionMatch != null && (
+                    (!usesTaggedMcqMarkers && builder == null) || isExplicitBoundary || isSequentialBoundary
+                    )
 
-                    if (isPlausibleBoundary) {
-                        builder?.build()?.let(parsed::add)
-                        builder = QuestionBuilder(
-                            number = candidateNumber!!,
-                            firstLine = questionMatch!!.groupValues[2].trim(),
-                            pageNumber = pageIndex + 1,
-                        )
-                    } else {
-                        builder?.append(line)
-                    }
+                if (isPlausibleBoundary) {
+                    builder?.build()?.let(parsed::add)
+                    builder = QuestionBuilder(
+                        number = candidateNumber!!,
+                        firstLine = questionMatch!!.groupValues[2].trim(),
+                        pageNumber = pageIndex + 1,
+                    )
                 } else {
                     builder?.append(line)
                 }
@@ -229,4 +224,38 @@ class PdfQuestionParser {
         val contentStart: Int,
         val hasFollowingSpace: Boolean,
     )
+}
+
+internal data class McqBoundary(val number: Int, val questionText: String = "")
+
+internal object McqBoundaryPatterns {
+    private const val PREFIX = """(?:#[^\r\n]*?|[\p{L}\p{N}][^\r\n]*[\p{Pd}_])?\s*"""
+    private const val NUMBER = """MCQ\s*[-#:]?\s*(\d{1,4})"""
+    private val markerOnly = Regex(
+        """^$PREFIX$NUMBER\s*[?.:]?\s*$""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val markerWithQuestion = Regex(
+        """^$PREFIX$NUMBER\s*(?:[.):\-]\s*|\s+)(.+)$""",
+        RegexOption.IGNORE_CASE,
+    )
+    val markerSections = Regex(
+        """(?m)^$PREFIX$NUMBER\s*[?.:]?\s*$""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun matches(line: String): Boolean = markerOnly.matches(line) || markerWithQuestion.matches(line)
+
+    fun match(line: String): McqBoundary? {
+        markerOnly.matchEntire(line)?.let {
+            return McqBoundary(number = it.groupValues[1].toInt())
+        }
+        markerWithQuestion.matchEntire(line)?.let {
+            return McqBoundary(
+                number = it.groupValues[1].toInt(),
+                questionText = it.groupValues[2].trim(),
+            )
+        }
+        return null
+    }
 }

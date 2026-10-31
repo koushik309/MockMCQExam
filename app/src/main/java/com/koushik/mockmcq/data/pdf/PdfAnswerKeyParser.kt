@@ -9,17 +9,13 @@ data class ParsedAnswerKey(
 }
 
 class PdfAnswerKeyParser {
-    private val markerPattern = Regex(
-        """(?m)^#[\p{L}\p{N}_-]*MCQ(\d+)\s*$""",
-        RegexOption.IGNORE_CASE,
-    )
     private val answerPattern = Regex(
         """(?im)^(?:Answer|Answwr)\s*(?:[-–—:]\s*)?([A-F])\b""",
     )
 
     fun parsePages(pages: List<String>): ParsedAnswerKey {
         val text = pages.joinToString("\n")
-        val markers = markerPattern.findAll(text).toList()
+        val markers = McqBoundaryPatterns.markerSections.findAll(text).toList()
         val answers = linkedMapOf<Int, String>()
         val detected = linkedSetOf<Int>()
         markers.forEachIndexed { index, marker ->

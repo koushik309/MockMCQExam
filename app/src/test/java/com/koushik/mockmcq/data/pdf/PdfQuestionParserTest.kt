@@ -174,4 +174,70 @@ class PdfQuestionParserTest {
         assertEquals("Token B.C,D stays here", result.options[0].text)
         assertEquals("Second choice", result.options[1].text)
     }
+
+    @Test
+    fun parsesPublisherMarkersWithSpacesSymbolsAndIrregularPunctuation() {
+        val input = """
+            #LXMT- CH 20 to 25 & 28 to 31-MCQ1
+            First question?
+            Options
+            A. First A
+            B. First B
+            C. First C
+            D. First D
+
+            #LXMT- CH 20 to 25 & 28 to 31-MCQ2
+            Second question?
+            Choices:
+            (A) Second A
+            (B) Second B
+            (C) Second C
+            (D) Second D
+
+            LXMT- CH 20 to 25 & 28 to 31-MCQ26
+            Question whose source marker has no hash?
+            Answer Choices
+            A: Twenty-six A
+            B: Twenty-six B
+            C: Twenty-six C
+            D: Twenty-six D
+
+            #LXMT- CH 20 to 25 & 28 to 31-MCQ73?
+            Question whose marker has trailing punctuation?
+            Options
+            A. Seventy-three A
+            B. Seventy-three B
+            C. Seventy-three C
+            D. Seventy-three D
+        """.trimIndent()
+
+        val result = parser.parsePages(listOf(input))
+
+        assertEquals(listOf(1, 2, 26, 73), result.map { it.number })
+        assertTrue(result.all { it.options.map { option -> option.label } == listOf("A", "B", "C", "D") })
+        assertEquals("Question whose source marker has no hash?", result[2].text)
+    }
+
+    @Test
+    fun parsesInlineMcqAndQuestionNumberFormats() {
+        val input = """
+            MCQ 1: Which format is supported?
+            A. Tagged
+            B. Inline
+            C. Numbered
+            D. All of these
+
+            Question No: 2. Which explicit heading is supported?
+            A. Question No
+            B. Q dot
+            C. Plain number
+            D. All of these
+        """.trimIndent()
+
+        val result = parser.parsePages(listOf(input))
+
+        assertEquals(listOf(1, 2), result.map { it.number })
+        assertEquals("Which format is supported?", result.first().text)
+        assertEquals(4, result.last().options.size)
+    }
 }
